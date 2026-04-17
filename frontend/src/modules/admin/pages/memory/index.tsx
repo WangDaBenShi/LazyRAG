@@ -21,6 +21,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import {
   AppstoreOutlined,
+  BookOutlined,
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
@@ -40,10 +41,11 @@ import { createGroupApi, createUserApi } from "@/modules/signin/utils/request";
 
 import "./index.scss";
 
-type MemoryTab = "tools" | "skills" | "experience";
+type MemoryTab = "tools" | "skills" | "experience" | "glossary";
 type ModalMode = "add" | "edit" | "view";
-type ShareableTab = Exclude<MemoryTab, "tools">;
+type ShareableTab = "skills" | "experience";
 type ChangeProposalTab = Extract<MemoryTab, "skills" | "experience">;
+type GlossarySource = "user" | "ai" | "system";
 
 interface BaseAsset {
   id: string;
@@ -63,6 +65,20 @@ interface ExperienceAsset extends BaseAsset {
   title: string;
 }
 
+interface GlossaryAsset extends BaseAsset {
+  term: string;
+  aliases: string[];
+  source: GlossarySource;
+}
+
+interface GlossaryChangeProposal {
+  id: string;
+  targetId: string;
+  before: GlossaryAsset | null;
+  after: GlossaryAsset;
+  reason: string;
+}
+
 interface AssetDraft {
   id?: string;
   title: string;
@@ -72,6 +88,9 @@ interface AssetDraft {
   tags: string[];
   parentId: string;
   childSkills: ChildSkillDraft[];
+  term: string;
+  aliases: string[];
+  source: GlossarySource;
   content: string;
   protect: boolean;
 }
@@ -147,6 +166,9 @@ const createDraft = (): AssetDraft => ({
   tags: [],
   parentId: "",
   childSkills: [],
+  term: "",
+  aliases: [],
+  source: "user",
   content: "",
   protect: false,
 });
@@ -238,6 +260,33 @@ const initialExperience: ExperienceAsset[] = [
   },
 ];
 
+const initialGlossary: GlossaryAsset[] = [
+  {
+    id: "glossary-rainfall-threshold",
+    term: "雨强阈值",
+    aliases: ["降雨阈值", "触发雨量阈值"],
+    source: "user",
+    content: "用于判定地质灾害预警等级的降雨强度临界值。",
+    protect: false,
+  },
+  {
+    id: "glossary-rock-pile",
+    term: "岩堆体",
+    aliases: ["崩塌堆积体", "松散堆积体"],
+    source: "system",
+    content: "常见不良地质体，检索阶段需与边坡失稳风险词联动。",
+    protect: true,
+  },
+  {
+    id: "glossary-chainage",
+    term: "里程桩号",
+    aliases: ["桩号", "线路里程"],
+    source: "ai",
+    content: "用于定位铁路线路具体位置的标准标识，通常格式为 Kxx+xxx。",
+    protect: false,
+  },
+];
+
 const cloneStructuredAsset = (item: StructuredAsset): StructuredAsset => ({
   ...item,
   tags: [...item.tags],
@@ -245,6 +294,11 @@ const cloneStructuredAsset = (item: StructuredAsset): StructuredAsset => ({
 
 const cloneExperienceAsset = (item: ExperienceAsset): ExperienceAsset => ({
   ...item,
+});
+
+const cloneGlossaryAsset = (item: GlossaryAsset): GlossaryAsset => ({
+  ...item,
+  aliases: [...item.aliases],
 });
 
 interface StructuredDiffLabels {
@@ -355,7 +409,44 @@ const initialChangeProposals: ChangeProposal[] = (() => {
   ];
 })();
 
-const memoryTabOrder: MemoryTab[] = ["skills", "experience", "tools"];
+const initialGlossaryChangeProposals: GlossaryChangeProposal[] = (() => {
+  const rainfallItem = initialGlossary.find(
+    (item) => item.id === "glossary-rainfall-threshold",
+  );
+  if (!rainfallItem) {
+    return [];
+  }
+
+  return [
+    {
+      id: "glossary-proposal-rainfall-threshold",
+      targetId: rainfallItem.id,
+      before: cloneGlossaryAsset(rainfallItem),
+      after: {
+        ...cloneGlossaryAsset(rainfallItem),
+        aliases: [...rainfallItem.aliases, "预警雨量阈值"],
+        content: "用于判定地质灾害预警等级与触发条件的关键雨强临界值。",
+      },
+      reason: "根据近期负反馈补全常见别名，并统一术语解释口径。",
+    },
+    {
+      id: "glossary-proposal-new-duration-curve",
+      targetId: "glossary-rainfall-duration-curve",
+      before: null,
+      after: {
+        id: "glossary-rainfall-duration-curve",
+        term: "雨量历时曲线",
+        aliases: ["降雨历时曲线", "雨量-历时曲线"],
+        source: "ai",
+        content: "用于判断不同历时降雨过程与灾害触发概率关系的分析曲线。",
+        protect: false,
+      },
+      reason: "AI 从近期对话中提炼的高频术语，建议纳入词表以提升召回。",
+    },
+  ];
+})();
+
+const memoryTabOrder: MemoryTab[] = ["glossary", "skills", "experience", "tools"];
 
 export default function MemoryManagement() {
   const { t } = useTranslation();
@@ -365,9 +456,18 @@ export default function MemoryManagement() {
   const [skillAssets, setSkillAssets] = useState<StructuredAsset[]>(initialSkills);
   const [experienceAssets, setExperienceAssets] =
     useState<ExperienceAsset[]>(initialExperience);
+  const [glossaryAssets, setGlossaryAssets] =
+    useState<GlossaryAsset[]>(initialGlossary);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>();
   const [tag, setTag] = useState<string>();
+  const [glossarySource, setGlossarySource] = useState<GlossarySource>();
+  const [glossaryInboxOpen, setGlossaryInboxOpen] = useState(false);
+  const [selectedGlossaryProposalIds, setSelectedGlossaryProposalIds] = useState<string[]>(
+    [],
+  );
+  const [glossaryDetailTarget, setGlossaryDetailTarget] =
+    useState<GlossaryAsset | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>("view");
   const [draft, setDraft] = useState<AssetDraft>(createDraft());
   const [modalOpen, setModalOpen] = useState(false);
@@ -375,6 +475,8 @@ export default function MemoryManagement() {
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [changeProposals, setChangeProposals] =
     useState<ChangeProposal[]>(initialChangeProposals);
+  const [glossaryChangeProposals, setGlossaryChangeProposals] =
+    useState<GlossaryChangeProposal[]>(initialGlossaryChangeProposals);
   const [activeProposalId, setActiveProposalId] = useState<string>();
   const [activeReviewStep, setActiveReviewStep] = useState<0 | 1>(0);
   const [proposalFieldDecisions, setProposalFieldDecisions] =
@@ -416,6 +518,12 @@ export default function MemoryManagement() {
       description: t("admin.memoryTabExperienceDesc"),
       unit: t("admin.memoryUnitExperience"),
       icon: <HistoryOutlined />,
+    },
+    glossary: {
+      title: t("admin.memoryTabGlossary"),
+      description: t("admin.memoryTabGlossaryDesc"),
+      unit: t("admin.memoryUnitGlossary"),
+      icon: <BookOutlined />,
     },
   };
 
@@ -807,6 +915,30 @@ export default function MemoryManagement() {
       item.content.toLowerCase().includes(keyword)
     );
   });
+  const filteredGlossaryItems = glossaryAssets.filter((item) => {
+    const matchesSource = !glossarySource || item.source === glossarySource;
+    if (!matchesSource) {
+      return false;
+    }
+
+    if (!keyword) {
+      return true;
+    }
+
+    return (
+      item.term.toLowerCase().includes(keyword) ||
+      item.aliases.some((alias) => alias.toLowerCase().includes(keyword)) ||
+      item.content.toLowerCase().includes(keyword)
+    );
+  });
+  const availableGlossarySourceOptions: Array<{
+    value: GlossarySource;
+    label: string;
+  }> = [
+    { value: "user", label: t("admin.memoryGlossarySourceUser") },
+    { value: "ai", label: t("admin.memoryGlossarySourceAI") },
+    { value: "system", label: t("admin.memoryGlossarySourceSystem") },
+  ];
 
   const filteredStructuredItems = currentStructuredItems.filter((item) =>
     matchesStructuredFilter(item),
@@ -845,11 +977,17 @@ export default function MemoryManagement() {
 
   const protectedCount =
     skillAssets.filter((item) => item.protect).length +
-    experienceAssets.filter((item) => item.protect).length;
+    experienceAssets.filter((item) => item.protect).length +
+    glossaryAssets.filter((item) => item.protect).length;
   const totalAssets =
-    toolAssets.length + skillAssets.length + experienceAssets.length;
+    toolAssets.length + skillAssets.length + experienceAssets.length + glossaryAssets.length;
   const currentTabCount =
-    activeTab === "experience" ? experienceAssets.length : currentStructuredItems.length;
+    activeTab === "experience"
+      ? experienceAssets.length
+      : activeTab === "glossary"
+        ? glossaryAssets.length
+        : currentStructuredItems.length;
+  const glossarySourceCount = new Set(glossaryAssets.map((item) => item.source)).size;
 
   const summaryCards = [
     {
@@ -878,8 +1016,15 @@ export default function MemoryManagement() {
       label:
         activeTab === "experience"
           ? t("admin.memoryTagCount")
+          : activeTab === "glossary"
+            ? t("admin.memorySourceCount")
           : t("admin.memoryCategoryCount"),
-      value: activeTab === "experience" ? availableTags.length : availableCategories.length,
+      value:
+        activeTab === "experience"
+          ? availableTags.length
+          : activeTab === "glossary"
+            ? glossarySourceCount
+            : availableCategories.length,
       icon: <LockOutlined />,
       tone: "soft",
     },
@@ -889,6 +1034,7 @@ export default function MemoryManagement() {
     setQuery("");
     setCategory(undefined);
     setTag(undefined);
+    setGlossarySource(undefined);
   };
 
   const addChildSkillDraft = () => {
@@ -993,7 +1139,10 @@ export default function MemoryManagement() {
     setSearchParams(nextSearchParams, { replace: true });
   };
 
-  const openModal = (mode: ModalMode, item?: StructuredAsset | ExperienceAsset) => {
+  const openModal = (
+    mode: ModalMode,
+    item?: StructuredAsset | ExperienceAsset | GlossaryAsset,
+  ) => {
     setModalMode(mode);
 
     if (!item) {
@@ -1012,6 +1161,25 @@ export default function MemoryManagement() {
         tags: [],
         parentId: "",
         childSkills: [],
+        term: "",
+        aliases: [],
+        source: "user",
+        content: item.content,
+        protect: Boolean(item.protect),
+      });
+    } else if ("term" in item) {
+      setDraft({
+        id: item.id,
+        title: "",
+        name: "",
+        description: "",
+        category: "",
+        tags: [],
+        parentId: "",
+        childSkills: [],
+        term: item.term,
+        aliases: [...item.aliases],
+        source: item.source,
         content: item.content,
         protect: Boolean(item.protect),
       });
@@ -1025,6 +1193,9 @@ export default function MemoryManagement() {
         tags: item.tags,
         parentId: item.parentId || "",
         childSkills: [],
+        term: "",
+        aliases: [],
+        source: "user",
         content: item.content,
         protect: Boolean(item.protect),
       });
@@ -1281,8 +1452,8 @@ export default function MemoryManagement() {
     message.success(t("admin.memoryDiffApproveSuccess"));
   };
 
-  const handleDelete = (item: StructuredAsset | ExperienceAsset) => {
-    const itemName = "title" in item ? item.title : item.name;
+  const handleDelete = (item: StructuredAsset | ExperienceAsset | GlossaryAsset) => {
+    const itemName = "title" in item ? item.title : "term" in item ? item.term : item.name;
 
     Modal.confirm({
       title: t("common.delete"),
@@ -1314,6 +1485,14 @@ export default function MemoryManagement() {
             ),
           );
         }
+        if (activeTab === "glossary") {
+          setGlossaryAssets((previous) =>
+            previous.filter((entry) => entry.id !== item.id),
+          );
+          setGlossaryChangeProposals((previous) =>
+            previous.filter((proposal) => proposal.targetId !== item.id),
+          );
+        }
 
         message.success(t("admin.memoryDeleteSuccess"));
       },
@@ -1321,7 +1500,33 @@ export default function MemoryManagement() {
   };
 
   const saveDraft = () => {
-    if (activeTab === "experience") {
+    if (activeTab === "glossary") {
+      if (!draft.term.trim() || !draft.content.trim()) {
+        message.warning(`${t("common.pleaseInput")}${t("admin.memoryGlossaryTerm")}`);
+        return;
+      }
+
+      const payload: GlossaryAsset = {
+        id: draft.id || createId("glossary"),
+        term: draft.term.trim(),
+        aliases: draft.aliases.map((item) => item.trim()).filter(Boolean),
+        source: draft.source,
+        content: draft.content.trim(),
+        protect: draft.protect,
+      };
+
+      setGlossaryAssets((previous) => {
+        if (modalMode === "edit") {
+          return previous.map((item) => (item.id === payload.id ? payload : item));
+        }
+        return [payload, ...previous];
+      });
+      if (modalMode === "edit") {
+        setGlossaryChangeProposals((previous) =>
+          previous.filter((proposal) => proposal.targetId !== payload.id),
+        );
+      }
+    } else if (activeTab === "experience") {
       if (!draft.title.trim() || !draft.content.trim()) {
         message.warning(`${t("common.pleaseInput")}${t("admin.memoryTitle")}`);
         return;
@@ -1546,6 +1751,107 @@ export default function MemoryManagement() {
     setActiveTab(sharedTab);
     openModal("view", matchedItem);
   }, [searchParams, shareableItems, t]);
+  const glossarySourceLabelMap: Record<GlossarySource, string> = {
+    user: t("admin.memoryGlossarySourceUser"),
+    ai: t("admin.memoryGlossarySourceAI"),
+    system: t("admin.memoryGlossarySourceSystem"),
+  };
+  const glossarySourceColorMap: Record<GlossarySource, string> = {
+    user: "blue",
+    ai: "purple",
+    system: "gold",
+  };
+  const glossaryProposalIds = useMemo(
+    () => glossaryChangeProposals.map((item) => item.id),
+    [glossaryChangeProposals],
+  );
+  const isAllGlossaryProposalsSelected = useMemo(
+    () =>
+      glossaryProposalIds.length > 0 &&
+      selectedGlossaryProposalIds.length === glossaryProposalIds.length,
+    [glossaryProposalIds, selectedGlossaryProposalIds],
+  );
+  const isPartialGlossaryProposalSelected = useMemo(
+    () =>
+      selectedGlossaryProposalIds.length > 0 &&
+      selectedGlossaryProposalIds.length < glossaryProposalIds.length,
+    [glossaryProposalIds.length, selectedGlossaryProposalIds.length],
+  );
+
+  useEffect(() => {
+    setSelectedGlossaryProposalIds((previous) =>
+      previous.filter((id) => glossaryProposalIds.includes(id)),
+    );
+  }, [glossaryProposalIds]);
+
+  const openGlossaryDetail = (item: GlossaryAsset) => {
+    setGlossaryDetailTarget(cloneGlossaryAsset(item));
+    setActiveTab("glossary");
+  };
+  const closeGlossaryDetail = () => {
+    setGlossaryDetailTarget(null);
+  };
+  const applyGlossaryProposals = (proposals: GlossaryChangeProposal[]) => {
+    if (!proposals.length) {
+      message.info(t("admin.memoryGlossaryInboxSelectFirst"));
+      return;
+    }
+
+    setGlossaryAssets((previous) => {
+      const next = [...previous];
+      proposals.forEach((proposal) => {
+        const existingIndex = next.findIndex(
+          (item) =>
+            item.id === proposal.targetId ||
+            (proposal.before ? item.id === proposal.before.id : false),
+        );
+        if (existingIndex >= 0) {
+          next[existingIndex] = cloneGlossaryAsset(proposal.after);
+          return;
+        }
+        next.unshift(cloneGlossaryAsset(proposal.after));
+      });
+      return next;
+    });
+
+    setGlossaryChangeProposals((previous) =>
+      previous.filter(
+        (proposal) => !proposals.some((selected) => selected.id === proposal.id),
+      ),
+    );
+    setSelectedGlossaryProposalIds((previous) =>
+      previous.filter((id) => !proposals.some((proposal) => proposal.id === id)),
+    );
+    message.success(t("admin.memoryGlossaryInboxAcceptSuccess"));
+  };
+  const rejectGlossaryProposals = (proposals: GlossaryChangeProposal[]) => {
+    if (!proposals.length) {
+      message.info(t("admin.memoryGlossaryInboxSelectFirst"));
+      return;
+    }
+
+    setGlossaryChangeProposals((previous) =>
+      previous.filter(
+        (proposal) => !proposals.some((selected) => selected.id === proposal.id),
+      ),
+    );
+    setSelectedGlossaryProposalIds((previous) =>
+      previous.filter((id) => !proposals.some((proposal) => proposal.id === id)),
+    );
+    message.success(t("admin.memoryGlossaryInboxRejectSuccess"));
+  };
+  const acceptSelectedGlossaryProposals = () => {
+    const selected = glossaryChangeProposals.filter((proposal) =>
+      selectedGlossaryProposalIds.includes(proposal.id),
+    );
+    applyGlossaryProposals(selected);
+  };
+  const rejectSelectedGlossaryProposals = () => {
+    const selected = glossaryChangeProposals.filter((proposal) =>
+      selectedGlossaryProposalIds.includes(proposal.id),
+    );
+    rejectGlossaryProposals(selected);
+  };
 
   const genericColumns: ColumnsType<StructuredAsset> = [
     {
@@ -1743,6 +2049,94 @@ export default function MemoryManagement() {
       ),
     },
   ];
+  const glossaryColumns: ColumnsType<GlossaryAsset> = [
+    {
+      title: t("admin.memoryGlossaryTerm"),
+      dataIndex: "term",
+      key: "term",
+      width: 380,
+      render: (_value, record) => (
+        <div className="memory-table-main">
+          <div className="memory-table-main-title">
+            <button
+              type="button"
+              className="memory-term-link"
+              onClick={() => openGlossaryDetail(record)}
+            >
+              {record.term}
+            </button>
+            {record.protect ? (
+              <Tag className="memory-protect-tag" bordered={false}>
+                <LockOutlined />
+                <span>{t("admin.memoryProtect")}</span>
+              </Tag>
+            ) : null}
+          </div>
+          <div className="memory-tag-group memory-tag-group-scroll">
+            {record.aliases.length ? (
+              record.aliases.map((alias) => <Tag key={alias}>{alias}</Tag>)
+            ) : (
+              <span className="memory-content-preview">-</span>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      title: t("admin.memoryGlossarySource"),
+      dataIndex: "source",
+      key: "source",
+      width: 150,
+      render: (source: GlossarySource) => (
+        <Tag color={glossarySourceColorMap[source]}>
+          {glossarySourceLabelMap[source]}
+        </Tag>
+      ),
+    },
+    {
+      title: t("admin.memoryContentSummary"),
+      dataIndex: "content",
+      key: "content",
+      width: 420,
+      render: (value: string) => (
+        <div className="memory-content-preview memory-content-preview-glossary">
+          {value}
+        </div>
+      ),
+    },
+    {
+      title: t("admin.memoryOperations"),
+      key: "actions",
+      width: 170,
+      render: (_value, record) => (
+        <Space size={4}>
+          <Tooltip title={t("admin.memoryViewItem")}>
+            <Button
+              type="text"
+              icon={<EyeOutlined />}
+              onClick={() => openGlossaryDetail(record)}
+            />
+          </Tooltip>
+          <Tooltip title={t("admin.memoryEditItem")}>
+            <Button
+              type="text"
+              icon={<EditOutlined />}
+              onClick={() => openModal("edit", record)}
+            />
+          </Tooltip>
+          <Tooltip title={t("admin.memoryDeleteItem")}>
+            <Button
+              type="text"
+              danger
+              disabled={record.protect}
+              icon={<DeleteOutlined />}
+              onClick={() => handleDelete(record)}
+            />
+          </Tooltip>
+        </Space>
+      ),
+    },
+  ];
 
   const modalTitle = `${t(
     modalMode === "add"
@@ -1758,6 +2152,14 @@ export default function MemoryManagement() {
     value: item,
   }));
   const isReviewMode = Boolean(activeProposal && activeProposalDiff);
+  const glossaryDetailExists = useMemo(
+    () =>
+      glossaryDetailTarget
+        ? glossaryAssets.some((item) => item.id === glossaryDetailTarget.id)
+        : false,
+    [glossaryAssets, glossaryDetailTarget],
+  );
+  const isGlossaryDetailMode = activeTab === "glossary" && Boolean(glossaryDetailTarget);
 
   return (
     <div className="admin-page memory-page">
@@ -2022,6 +2424,54 @@ export default function MemoryManagement() {
             )}
           </div>
         </div>
+      ) : isGlossaryDetailMode && glossaryDetailTarget ? (
+        <div className="memory-glossary-detail-layout">
+          <div className="memory-page-header">
+            <div>
+              <h2 className="admin-page-title">{t("admin.memoryGlossaryDetailTitle")}</h2>
+              <p className="memory-page-subtitle">{glossaryDetailTarget.term}</p>
+            </div>
+            <Space>
+              <Button onClick={closeGlossaryDetail}>{t("common.back")}</Button>
+              {glossaryDetailExists ? (
+                <Button
+                  type="primary"
+                  onClick={() => openModal("edit", glossaryDetailTarget)}
+                >
+                  {t("admin.memoryEditItem")}
+                </Button>
+              ) : null}
+            </Space>
+          </div>
+          <div className="memory-glossary-detail-page">
+            <div className="memory-glossary-detail-card">
+              <div className="memory-glossary-detail-title">
+                <h3>{glossaryDetailTarget.term}</h3>
+                <Tag color={glossarySourceColorMap[glossaryDetailTarget.source]}>
+                  {glossarySourceLabelMap[glossaryDetailTarget.source]}
+                </Tag>
+              </div>
+              <div className="memory-form-field memory-form-field-full">
+                <label>{t("admin.memoryGlossaryAliases")}</label>
+                <div className="memory-tag-group">
+                  {glossaryDetailTarget.aliases.length ? (
+                    glossaryDetailTarget.aliases.map((alias) => (
+                      <Tag key={`detail-${alias}`}>{alias}</Tag>
+                    ))
+                  ) : (
+                    <span className="memory-content-preview">-</span>
+                  )}
+                </div>
+              </div>
+              <div className="memory-form-field memory-form-field-full">
+                <label>{t("admin.memoryContent")}</label>
+                <div className="memory-glossary-detail-content">
+                  {glossaryDetailTarget.content}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : (
         <>
           <div className="memory-page-header">
@@ -2032,6 +2482,13 @@ export default function MemoryManagement() {
               </p>
             </div>
             <Space>
+              {activeTab === "glossary" ? (
+                <Button onClick={() => setGlossaryInboxOpen(true)}>
+                  {t("admin.memoryGlossaryInboxButton", {
+                    count: glossaryChangeProposals.length,
+                  })}
+                </Button>
+              ) : null}
               {activeTab !== "tools" ? (
                 <Button
                   type="primary"
@@ -2064,6 +2521,8 @@ export default function MemoryManagement() {
                   ? toolAssets.length
                   : tabKey === "skills"
                     ? skillAssets.length
+                    : tabKey === "glossary"
+                      ? glossaryAssets.length
                     : experienceAssets.length;
 
               return (
@@ -2073,6 +2532,9 @@ export default function MemoryManagement() {
                   className={`memory-tab-card ${activeTab === tabKey ? "is-active" : ""}`}
                   onClick={() => {
                     setActiveTab(tabKey);
+                    if (tabKey !== "glossary") {
+                      closeGlossaryDetail();
+                    }
                     resetFilters();
                     syncShareParams(tabKey);
                   }}
@@ -2098,7 +2560,7 @@ export default function MemoryManagement() {
               })}
               className="memory-filter-search"
             />
-            {activeTab !== "experience" ? (
+            {activeTab === "tools" || activeTab === "skills" ? (
               <>
                 <Select
                   allowClear
@@ -2123,6 +2585,15 @@ export default function MemoryManagement() {
                   onChange={(value) => setTag(value)}
                 />
               </>
+            ) : activeTab === "glossary" ? (
+              <Select
+                allowClear
+                value={glossarySource}
+                placeholder={t("admin.memoryAllSources")}
+                options={availableGlossarySourceOptions}
+                className="memory-filter-select"
+                onChange={(value) => setGlossarySource(value)}
+              />
             ) : null}
             <Button onClick={resetFilters}>{t("admin.memoryReset")}</Button>
           </div>
@@ -2152,6 +2623,24 @@ export default function MemoryManagement() {
                 ),
               }}
               scroll={{ x: 980 }}
+            />
+          ) : activeTab === "glossary" ? (
+            <Table<GlossaryAsset>
+              className="admin-page-table memory-table"
+              rowKey="id"
+              dataSource={filteredGlossaryItems}
+              columns={glossaryColumns}
+              tableLayout="fixed"
+              pagination={{ pageSize: 6, showSizeChanger: false }}
+              locale={{
+                emptyText: (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description={t("admin.memoryEmpty")}
+                  />
+                ),
+              }}
+              scroll={{ x: 1120 }}
             />
           ) : (
             <Table<StructuredAsset>
@@ -2184,6 +2673,131 @@ export default function MemoryManagement() {
       )}
 
       <Modal
+        open={glossaryInboxOpen}
+        title={t("admin.memoryGlossaryInboxTitle")}
+        onCancel={() => setGlossaryInboxOpen(false)}
+        width={920}
+        footer={[
+          <Button key="close" onClick={() => setGlossaryInboxOpen(false)}>
+            {t("common.close")}
+          </Button>,
+          <Button key="reject" onClick={rejectSelectedGlossaryProposals}>
+            {t("admin.memoryGlossaryInboxReject")}
+          </Button>,
+          <Button key="accept" type="primary" onClick={acceptSelectedGlossaryProposals}>
+            {t("admin.memoryGlossaryInboxAccept")}
+          </Button>,
+        ]}
+      >
+        {glossaryChangeProposals.length ? (
+          <div className="memory-glossary-inbox">
+            <div className="memory-glossary-inbox-toolbar">
+              <Checkbox
+                checked={isAllGlossaryProposalsSelected}
+                indeterminate={isPartialGlossaryProposalSelected}
+                onChange={(event) =>
+                  setSelectedGlossaryProposalIds(
+                    event.target.checked ? [...glossaryProposalIds] : [],
+                  )
+                }
+              >
+                {t("admin.memoryGlossaryInboxSelectAll")}
+              </Checkbox>
+              <span>
+                {t("admin.memoryGlossaryInboxStats", {
+                  selected: selectedGlossaryProposalIds.length,
+                  total: glossaryChangeProposals.length,
+                })}
+              </span>
+            </div>
+            <div className="memory-glossary-inbox-list">
+              {glossaryChangeProposals.map((proposal) => {
+                const checked = selectedGlossaryProposalIds.includes(proposal.id);
+                const proposalTypeText = proposal.before
+                  ? t("admin.memoryGlossaryInboxTypeUpdate")
+                  : t("admin.memoryGlossaryInboxTypeAdd");
+
+                return (
+                  <div key={proposal.id} className="memory-glossary-inbox-card">
+                    <div className="memory-glossary-inbox-card-head">
+                      <Checkbox
+                        checked={checked}
+                        onChange={(event) =>
+                          setSelectedGlossaryProposalIds((previous) =>
+                            event.target.checked
+                              ? [...previous, proposal.id]
+                              : previous.filter((id) => id !== proposal.id),
+                          )
+                        }
+                      >
+                        {proposal.after.term}
+                      </Checkbox>
+                      <Space size={8}>
+                        <Tag color="blue">{proposalTypeText}</Tag>
+                        <Tag color={glossarySourceColorMap[proposal.after.source]}>
+                          {glossarySourceLabelMap[proposal.after.source]}
+                        </Tag>
+                      </Space>
+                    </div>
+                    <div className="memory-glossary-inbox-card-body">
+                      <div className="memory-glossary-inbox-card-line">
+                        <strong>{t("admin.memoryGlossaryInboxReason")}</strong>
+                        <span>{proposal.reason}</span>
+                      </div>
+                      <div className="memory-glossary-inbox-card-line">
+                        <strong>{t("admin.memoryGlossaryAliases")}</strong>
+                        <div className="memory-tag-group memory-tag-group-scroll">
+                          {proposal.after.aliases.length ? (
+                            proposal.after.aliases.map((alias) => (
+                              <Tag key={`${proposal.id}-${alias}`}>{alias}</Tag>
+                            ))
+                          ) : (
+                            <span className="memory-content-preview">-</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="memory-glossary-inbox-card-line">
+                        <strong>{t("admin.memoryContent")}</strong>
+                        <span className="memory-content-preview memory-content-preview-glossary">
+                          {proposal.after.content}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="memory-glossary-inbox-card-actions">
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setGlossaryInboxOpen(false);
+                          openGlossaryDetail(proposal.after);
+                        }}
+                      >
+                        {t("admin.memoryGlossaryInboxDetail")}
+                      </Button>
+                      <Button size="small" onClick={() => rejectGlossaryProposals([proposal])}>
+                        {t("admin.memoryGlossaryInboxReject")}
+                      </Button>
+                      <Button
+                        size="small"
+                        type="primary"
+                        onClick={() => applyGlossaryProposals([proposal])}
+                      >
+                        {t("admin.memoryGlossaryInboxAccept")}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={t("admin.memoryGlossaryInboxEmpty")}
+          />
+        )}
+      </Modal>
+
+      <Modal
         open={modalOpen}
         title={modalTitle}
         onCancel={closeModal}
@@ -2210,6 +2824,44 @@ export default function MemoryManagement() {
               <label>{t("admin.memoryContent")}</label>
               <Input.TextArea
                 rows={9}
+                value={draft.content}
+                readOnly={isReadOnly}
+                placeholder={t("common.pleaseInput") + t("admin.memoryContent")}
+                onChange={(event) =>
+                  setDraft((previous) => ({ ...previous, content: event.target.value }))
+                }
+              />
+            </div>
+          </div>
+        ) : activeTab === "glossary" ? (
+          <div className="memory-modal-grid">
+            <div className="memory-form-field memory-form-field-full">
+              <label>{t("admin.memoryGlossaryTerm")}</label>
+              <Input
+                value={draft.term}
+                readOnly={isReadOnly}
+                placeholder={t("common.pleaseInput") + t("admin.memoryGlossaryTerm")}
+                onChange={(event) =>
+                  setDraft((previous) => ({ ...previous, term: event.target.value }))
+                }
+              />
+            </div>
+            <div className="memory-form-field memory-form-field-full">
+              <label>{t("admin.memoryGlossaryAliases")}</label>
+              <Select
+                mode="tags"
+                value={draft.aliases}
+                disabled={isReadOnly}
+                placeholder={t("admin.memoryGlossaryAliasesPlaceholder")}
+                onChange={(value) =>
+                  setDraft((previous) => ({ ...previous, aliases: value }))
+                }
+              />
+            </div>
+            <div className="memory-form-field memory-form-field-full">
+              <label>{t("admin.memoryContent")}</label>
+              <Input.TextArea
+                rows={10}
                 value={draft.content}
                 readOnly={isReadOnly}
                 placeholder={t("common.pleaseInput") + t("admin.memoryContent")}

@@ -21,6 +21,7 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
     const { t } = useTranslation();
     const [visible, setVisible] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [algoLoading, setAlgoLoading] = useState(false);
     const [data, setData] = useState<Dataset>();
     const [tags, setTags] = useState<string[]>([]);
     const [algorithm, setAlgorithm] = useState<Algo[]>([]);
@@ -30,12 +31,24 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
       onOpen,
     }));
 
-    function getAlgorithm() {
+    function getAlgorithm(sourceData?: Dataset) {
+      setAlgoLoading(true);
       KnowledgeBaseServiceApi()
         .datasetServiceListAlgos()
         .then((res) => {
           const list = res.data.algos;
           setAlgorithm(list || []);
+          const sourceAlgoId = sourceData?.algo?.algo_id;
+          if (list?.length === 1) {
+            form.setFieldsValue({
+              algo_id: sourceAlgoId || list[0].algo_id,
+            });
+          } else if (sourceAlgoId) {
+            form.setFieldsValue({ algo_id: sourceAlgoId });
+          }
+        })
+        .finally(() => {
+          setAlgoLoading(false);
         });
     }
 
@@ -49,7 +62,7 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
 
     function onOpen(sourceData: Dataset | undefined) {
       getTags();
-      getAlgorithm();
+      getAlgorithm(sourceData);
       setData(sourceData);
       if (sourceData) {
         form.setFieldsValue({
@@ -69,7 +82,10 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
     function onOk() {
       form.validateFields().then(async (values) => {
         const params = { ...values };
-        params.algo = algorithm.find((item) => item.algo_id === params.algo_id);
+        params.algo =
+          algorithm.find((item) => item.algo_id === params.algo_id) ||
+          (algorithm.length === 1 ? algorithm[0] : undefined) ||
+          data?.algo;
         delete params.algo_id;
         if (loading) {
           return;
@@ -124,8 +140,6 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
           <Form.Item
             name="desc"
             label={t("knowledge.knowledgeDesc")}
-            required
-            rules={[{ required: true, message: t("knowledge.inputKnowledgeDesc") }]}
           >
             <TextArea
               placeholder={t("knowledge.maxLength300Chars")}
@@ -134,21 +148,24 @@ const UpdateAppModel = forwardRef<UpdateImperativeProps, ForwardProps>(
               autoSize={{ minRows: 2, maxRows: 6 }}
             />
           </Form.Item>
-          <Form.Item
-            name="algo_id"
-            label={t("knowledge.parseAlgorithm")}
-            initialValue={null}
-            rules={[{ required: true, message: t("knowledge.selectParseAlgorithm") }]}
-          >
-            <Select
-              options={algorithm.map((item) => ({
-                label: item.display_name,
-                value: item.algo_id,
-              }))}
-              disabled={!!data?.dataset_id}
-              placeholder={t("knowledge.selectParseAlgorithm")}
-            />
-          </Form.Item>
+          {(algoLoading || algorithm.length !== 1) && (
+            <Form.Item
+              name="algo_id"
+              label={t("knowledge.parseAlgorithm")}
+              initialValue={null}
+              rules={[{ required: true, message: t("knowledge.selectParseAlgorithm") }]}
+            >
+              <Select
+                loading={algoLoading}
+                options={algorithm.map((item) => ({
+                  label: item.display_name,
+                  value: item.algo_id,
+                }))}
+                disabled={!!data?.dataset_id}
+                placeholder={t("knowledge.selectParseAlgorithm")}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="tags"
             label={t("knowledge.knowledgeTags")}
